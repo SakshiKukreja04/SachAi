@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:7.0
+    container_name: sachai-mongo
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: sachai-backend
+    volumes:
+      - mongo_data:/data/db
+
+  redis:
+    image: redis:7-alpine
+    container_name: sachai-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  backend:
+    build: .
+    container_name: sachai-backend
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      MONGO_URI: mongodb://mongodb:27017/sachai-backend
+      REDIS_URL: redis://redis:6379
+      MODEL_SERVER_URL: http://model-mock:8000
+      TEMP_DIR: ./tmp
+    depends_on:
+      - mongodb
+      - redis
+    volumes:
+      - ./tmp:/app/tmp
+
+  model-mock:
+    image: python:3.11-slim
+    container_name: sachai-model-mock
+    working_dir: /app
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./mock_model_server.py:/app/mock_model_server.py
+    command: bash -c "pip install fastapi uvicorn && uvicorn mock_model_server:app --host 0.0.0.0 --port 8000"
+    depends_on:
+      - backend
+
+volumes:
+  mongo_data:
+  redis_data:
