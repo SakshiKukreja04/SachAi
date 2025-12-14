@@ -114,11 +114,5 @@ Set environment variables:
 - `MODEL_SERVER_URL`: Flask server URL (default: http://localhost:8000)
 - `SKIP_MONGODB`: Set to 'true' to use in-memory storage
 
-## 📝 License
 
-[Add your license here]
-
-## 👥 Contributors
-
-[Add contributors here]
 
