@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom';
+import { useState } from 'react';
 import { ParticleBackground } from '@/components/ParticleBackground';
 import { Navbar } from '@/components/Navbar';
 import { UploadZone } from '@/components/UploadZone';
@@ -7,9 +8,46 @@ import { Shield, Zap, Lock, Eye } from 'lucide-react';
 const Index = () => {
   const navigate = useNavigate();
 
-  const handleUpload = (file: File | null, url: string | null) => {
-    // Navigate to analysis page with state
-    navigate('/analyze', { state: { file, url } });
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleUpload = async (file: File | null, url: string | null) => {
+    setIsLoading(true);
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
+      if (file) {
+        const form = new FormData();
+        form.append('video', file);
+
+        const resp = await fetch(`${API_URL}/api/analyze`, {
+          method: 'POST',
+          body: form,
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err?.error || `Upload failed: ${resp.status}`);
+        }
+        const data = await resp.json();
+        navigate('/analyze', { state: { jobId: data.jobId, file } });
+      } else if (url) {
+        const resp = await fetch(`${API_URL}/api/analyze`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ videoUrl: url }),
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err?.error || `Request failed: ${resp.status}`);
+        }
+        const data = await resp.json();
+        navigate('/analyze', { state: { jobId: data.jobId, url } });
+      }
+    } catch (e) {
+      console.error('Upload error', e);
+      alert(`Upload error: ${(e as Error).message}`);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const features = [
@@ -42,7 +80,7 @@ const Index = () => {
       
       <main className="relative z-10 pt-24 pb-16">
         {/* Hero Section */}
-        <section className="container mx-auto px-4 py-16 md:py-24">
+        <section key="hero-section" className="container mx-auto px-4 py-16 md:py-24">
           <div className="text-center max-w-4xl mx-auto mb-12 md:mb-16">
             <h1 className="font-heading text-4xl md:text-6xl lg:text-7xl font-bold mb-6 animate-fade-in">
               <span className="text-gradient">Seeing is no longer believing.</span>
@@ -54,12 +92,12 @@ const Index = () => {
 
           {/* Upload Zone */}
           <div className="animate-fade-in-up" style={{ animationDelay: '300ms' }}>
-            <UploadZone onUpload={handleUpload} />
+              <UploadZone onUpload={handleUpload} isLoading={isLoading} />
           </div>
         </section>
 
         {/* Features Section */}
-        <section className="container mx-auto px-4 py-16">
+        <section key="features-section" className="container mx-auto px-4 py-16">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             {features.map((feature, index) => (
               <div

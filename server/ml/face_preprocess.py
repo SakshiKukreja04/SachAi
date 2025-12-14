@@ -10,17 +10,15 @@ import os
 import json
 import argparse
 from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
+import requests
+import io
 from PIL import Image
 import numpy as np
 
 
-def extract_frames(video_path: str, out_dir: str, fps: int = 1) -> list:
-    """Extract frames from a video at given fps into out_dir.
-    Returns list of frame file paths.
-    """
-    os.makedirs(out_dir, exist_ok=True)
+def extract_frames_in_memory(video_path: str, fps: int = 1):
+    """Extract frames from a video at given fps and yield numpy arrays (no disk writes)."""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
@@ -36,33 +34,24 @@ def extract_frames(video_path: str, out_dir: str, fps: int = 1) -> list:
         if not ret:
             break
         if idx % frame_interval == 0:
-            fname = f"frame_{out_idx:05d}.jpg"
-            fpath = os.path.join(out_dir, fname)
-            cv2.imwrite(fpath, frame)
-            frames.append(fpath)
+            frames.append((out_idx, frame))
             out_idx += 1
         idx += 1
 
     cap.release()
-    print(f"[extract_frames] Wrote {len(frames)} frames to {out_dir}")
+    print(f"[extract_frames_in_memory] Extracted {len(frames)} frames from {video_path}")
     return frames
 
 
 # Top-level function used by ProcessPoolExecutor
-def _process_frame_for_faces(args):
-    frame_path, out_faces_dir, margin_pct = args
+def _detect_and_upload_from_frame(frame_idx: int, img, jobId: str, margin_pct: float = 0.1, backend_url: str = 'http://localhost:3000'):
     try:
-        img = cv2.imread(frame_path)
-        if img is None:
-            return {"frame": os.path.basename(frame_path), "faces": []}
-
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
 
         frame_faces = []
         for i, (x, y, w, h) in enumerate(faces):
-            # expand bbox by margin_pct
             mx = int(w * margin_pct)
             my = int(h * margin_pct)
             x0 = max(0, x - mx)
@@ -77,53 +66,53 @@ def _process_frame_for_faces(args):
             pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
             pil = pil.resize((299, 299))
 
-            face_fname = f"face_{Path(frame_path).stem}_{i+1}.jpg"
-            face_path = os.path.join(out_faces_dir, face_fname)
-            pil.save(face_path)
+            bio = io.BytesIO()
+            pil.save(bio, format='JPEG')
+            bio.seek(0)
+            face_fname = f"face_frame_{frame_idx:05d}_{i+1}.jpg"
+
+            # POST to backend internal upload
+            try:
+                files = {'file': (face_fname, bio, 'image/jpeg')}
+                data = {'jobId': jobId, 'filename': face_fname}
+                resp = requests.post(f"{backend_url}/internal/upload_face", files=files, data=data, timeout=30)
+                if resp.ok:
+                    resj = resp.json()
+                    uploaded_id = resj.get('id')
+                else:
+                    uploaded_id = None
+            except Exception as e:
+                print(f"[upload] failed: {e}")
+                uploaded_id = None
 
             cx = int(x + w / 2)
             cy = int(y + h / 2)
             frame_faces.append({
                 "bbox": [int(x0), int(y0), int(x1 - x0), int(y1 - y0)],
                 "center": [cx, cy],
-                "face_path": os.path.relpath(face_path)
+                "uploaded_id": uploaded_id,
+                "filename": face_fname
             })
 
-        return {"frame": os.path.basename(frame_path), "faces": frame_faces}
+        return {"frame": f"frame_{frame_idx:05d}.jpg", "faces": frame_faces}
     except Exception as e:
-        print(f"[process_frame_for_faces] Error processing {frame_path}: {e}")
-        return {"frame": os.path.basename(frame_path), "faces": []}
+        print(f"[process_frame_for_faces] Error processing frame {frame_idx}: {e}")
+        return {"frame": f"frame_{frame_idx:05d}.jpg", "faces": []}
 
 
-def detect_and_crop_faces(frames_dir: str, out_faces_dir: str, landmarks_json_path: str, jobId: str = "", workers: int = 4, margin_pct: float = 0.1):
-    """Detect faces in frames and crop them into out_faces_dir.
-    Writes a JSON landmarks file at landmarks_json_path.
-    """
-    os.makedirs(out_faces_dir, exist_ok=True)
-    frames = sorted([str(p) for p in Path(frames_dir).glob('frame_*.jpg')])
-
+def detect_and_upload_faces(video_path: str, jobId: str = "", fps: int = 1, margin_pct: float = 0.1, backend_url: str = 'http://localhost:3000'):
+    """Extract frames in-memory, detect faces and upload crops to backend; returns landmarks structure."""
+    frames = extract_frames_in_memory(video_path, fps=fps)
     results = {"jobId": jobId, "frames": []}
     if not frames:
-        print(f"[detect_and_crop_faces] No frames found in {frames_dir}")
-        with open(landmarks_json_path, 'w') as fh:
-            json.dump(results, fh, indent=2)
+        print(f"[detect_and_upload_faces] No frames extracted from {video_path}")
         return results
 
-    print(f"[detect_and_crop_faces] Processing {len(frames)} frames with {workers} workers")
+    print(f"[detect_and_upload_faces] Processing {len(frames)} frames and uploading faces to {backend_url}")
+    for (idx, frame) in tqdm(frames):
+        res = _detect_and_upload_from_frame(idx, frame, jobId, margin_pct=margin_pct, backend_url=backend_url)
+        results['frames'].append(res)
 
-    tasks = [(f, out_faces_dir, margin_pct) for f in frames]
-    with ProcessPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(_process_frame_for_faces, t): t[0] for t in tasks}
-        for fut in tqdm(as_completed(futures), total=len(futures)):
-            res = fut.result()
-            results['frames'].append(res)
-
-    # Save JSON
-    os.makedirs(os.path.dirname(landmarks_json_path), exist_ok=True)
-    with open(landmarks_json_path, 'w') as fh:
-        json.dump(results, fh, indent=2)
-
-    print(f"[detect_and_crop_faces] Wrote landmarks to {landmarks_json_path}")
     return results
 
 
@@ -136,7 +125,7 @@ def validate_sample(video_path: str, tmp_dir: str, jobId: str = 'test', fps: int
 
     os.makedirs(job_dir, exist_ok=True)
 
-    frames = extract_frames(video_path, frames_dir, fps=fps)
+    frames = extract_frames_in_memory(video_path, fps=fps)
     if not frames:
         print("[validate_sample] No frames extracted")
         return
@@ -150,12 +139,12 @@ def validate_sample(video_path: str, tmp_dir: str, jobId: str = 'test', fps: int
         if not os.path.exists(dst):
             os.replace(f, dst) if False else __import__('shutil').copyfile(f, dst)
 
-    # Run detection on sampled frames
-    detect_and_crop_faces(sample_frames_dir, faces_dir, landmarks_path, jobId=jobId, workers=workers)
+    # Run detection on sampled frames and upload
+    detect_and_upload_faces(video_path, jobId=jobId, fps=fps)
 
     # Print summary and attempt to show first N crops
-    with open(landmarks_path, 'r') as fh:
-        data = json.load(fh)
+    # Attempt to read landmarks from uploads is not available; just notify
+    data = {'frames': []}
 
     total_faces = sum(len(f['faces']) for f in data.get('frames', []))
     print(f"[validate_sample] Detected {total_faces} faces in sample {len(data.get('frames', []))} frames")
@@ -176,8 +165,7 @@ def validate_sample(video_path: str, tmp_dir: str, jobId: str = 'test', fps: int
         if shown >= sample_n:
             break
 
-    print(f"[validate_sample] Saved faces in: {faces_dir}")
-    print(f"[validate_sample] Landmarks JSON: {landmarks_path}")
+    print(f"[validate_sample] Uploaded face crops for job: {jobId}")
 
 
 if __name__ == '__main__':
@@ -198,8 +186,9 @@ if __name__ == '__main__':
 
     try:
         print(f"[main] video={args.video} out={args.out} jobId={args.jobId} fps={args.fps} workers={args.workers}")
-        extract_frames(args.video, frames_dir, fps=args.fps)
-        detect_and_crop_faces(frames_dir, faces_dir, landmarks_path, jobId=args.jobId, workers=args.workers)
-        print(f"[main] Completed. Faces at: {faces_dir}. Landmarks JSON: {landmarks_path}")
+        # New in-memory processing: detect faces and upload crops to backend without writing face files to disk
+        backend_url = os.environ.get('BACKEND_URL', 'http://localhost:3000')
+        res = detect_and_upload_faces(args.video, jobId=args.jobId, fps=args.fps, margin_pct=0.1, backend_url=backend_url)
+        print(f"[main] Completed. Uploaded faces for job: {args.jobId}")
     except Exception as e:
         print(f"[main] Error: {e}")

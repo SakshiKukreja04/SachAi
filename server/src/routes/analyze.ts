@@ -5,6 +5,7 @@ import path from 'path';
 import { Analysis } from '../models/Analysis';
 import { getQueue } from '../queues/jobQueue';
 import { logger } from '../utils/logger';
+import mongoose from 'mongoose';
 
 const router = Router();
 
@@ -38,6 +39,12 @@ router.post('/analyze', upload.single('video'), async (req: Request, res: Respon
     }
 
     // Create analysis document
+    // Check if MongoDB is connected or if we should use in-memory fallback
+    if (mongoose.connection.readyState !== 1 && process.env.SKIP_MONGODB !== 'true') {
+      // Force use of in-memory fallback
+      process.env.SKIP_MONGODB = 'true';
+    }
+    
     const analysis = await Analysis.create({
       jobId,
       status: 'queued',

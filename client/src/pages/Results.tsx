@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useParams, useLocation } from 'react-router-dom';
 import { ParticleBackground } from '@/components/ParticleBackground';
 import { Navbar } from '@/components/Navbar';
 import { GlassCard } from '@/components/GlassCard';
@@ -10,6 +10,88 @@ import { FrameThumbnail } from '@/components/FrameThumbnail';
 import { Button } from '@/components/ui/button';
 import { Download, Share2, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
+
+// Function to generate analysis summary from actual results
+const generateAnalysisSummary = (result: any): string => {
+  if (!result) {
+    return `Analysis in progress...
+    
+> Waiting for model inference to complete
+> Please refresh the page to see updated results`;
+  }
+
+  const visualProb = result.visual_prob ?? result.score ?? 0;
+  const scorePercent = Math.round(visualProb * 100);
+  const numFrames = result.meta?.num_frames ?? result.visual_scores?.length ?? 0;
+  const suspiciousFrames = result.suspiciousFrames || [];
+  const visualScores = result.visual_scores || [];
+
+  // Determine classification
+  let classification: string;
+  let confidenceLevel: string;
+  if (visualProb >= 0.66) {
+    classification = 'DEEPFAKE';
+    confidenceLevel = 'HIGH';
+  } else if (visualProb >= 0.33) {
+    classification = 'SUSPECTED';
+    confidenceLevel = 'MEDIUM';
+  } else {
+    classification = 'AUTHENTIC';
+    confidenceLevel = 'LOW';
+  }
+
+  // Calculate statistics
+  const frameScores = visualScores.map((s: any) => s.score ?? 0).filter((s: number) => s > 0);
+  const minScore = frameScores.length > 0 ? Math.min(...frameScores) : 0;
+  const maxScore = frameScores.length > 0 ? Math.max(...frameScores) : 0;
+  const meanScore = frameScores.length > 0 ? frameScores.reduce((a: number, b: number) => a + b, 0) / frameScores.length : 0;
+
+  // Build summary
+  let summary = `Analysis complete. Deepfake detection results:\n\n`;
+  summary += `> Overall probability: ${scorePercent}% (${visualProb.toFixed(4)})\n`;
+  summary += `> Classification: ${classification} (${confidenceLevel} confidence)\n`;
+  summary += `> Frames analyzed: ${numFrames}\n`;
+  
+  if (frameScores.length > 0) {
+    summary += `> Score range: ${Math.round(minScore * 100)}% - ${Math.round(maxScore * 100)}%\n`;
+    summary += `> Average frame score: ${Math.round(meanScore * 100)}%\n`;
+  }
+
+  if (suspiciousFrames.length > 0) {
+    summary += `\n> Top suspicious frames detected: ${suspiciousFrames.length}\n`;
+    suspiciousFrames.slice(0, 5).forEach((frame: any, idx: number) => {
+      const frameScore = frame.score ?? frame.confidence ?? 0;
+      const framePercent = Math.round(frameScore * 100);
+      const fileName = frame.file || frame.filename || `Frame ${idx + 1}`;
+      summary += `  - ${fileName}: ${framePercent}% confidence`;
+      if (frame.rank) {
+        summary += ` (Rank #${frame.rank})`;
+      }
+      summary += `\n`;
+    });
+  }
+
+  // Add recommendation
+  summary += `\nRecommendation: `;
+  if (visualProb >= 0.66) {
+    summary += `This video shows strong signs of AI-generated manipulation (${scorePercent}% probability). Exercise caution before sharing or using this content.`;
+  } else if (visualProb >= 0.33) {
+    summary += `Some indicators of potential manipulation detected (${scorePercent}% probability). Review the suspicious frames and consider additional verification.`;
+  } else {
+    summary += `The video appears to be authentic (${scorePercent}% probability of being fake). Low confidence in deepfake detection.`;
+  }
+
+  if (result.meta?.model) {
+    summary += `\n\nModel: ${result.meta.model}`;
+    if (result.meta.checkpoint_loaded) {
+      summary += ` (Trained model loaded)`;
+    } else {
+      summary += ` (Untrained - results may be unreliable)`;
+    }
+  }
+
+  return summary;
+};
 
 // Demo data
 const demoResult = {
@@ -34,7 +116,9 @@ Recommendation: This video shows strong signs of AI-generated manipulation. Exer
 
 const Results = () => {
   const { id } = useParams();
+  const location = useLocation();
   const [feedback, setFeedback] = useState<'helpful' | 'not-accurate' | null>(null);
+  const [result, setResult] = useState<any | null>(null);
 
   const handleSaveReport = () => {
     toast({
@@ -59,6 +143,63 @@ const Results = () => {
     });
   };
 
+  useEffect(() => {
+    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+    const jobId = (location.state as any)?.jobId || id;
+    if (!jobId) return;
+
+    const fetchStatus = async () => {
+      try {
+        const resp = await fetch(`${API_URL}/api/status/${jobId}`);
+        if (!resp.ok) {
+          console.error(`Status fetch failed: ${resp.status} ${resp.statusText}`);
+          return;
+        }
+        const data = await resp.json();
+        console.log('Raw API response:', data);
+        const resultData = data.result || null;
+        console.log('Result data:', resultData);
+        setResult(resultData);
+        
+        // Log final score for debugging - handle both visual_prob and legacy score field
+        const score = resultData?.visual_prob ?? resultData?.score;
+        if (score !== undefined && score !== null) {
+          let classification = 'UNKNOWN';
+          let confidenceLevel = 'UNKNOWN';
+          if (score >= 0.66) {
+            classification = 'DEEPFAKE';
+            confidenceLevel = 'HIGH';
+          } else if (score >= 0.33) {
+            classification = 'SUSPECTED';
+            confidenceLevel = 'MEDIUM';
+          } else {
+            classification = 'AUTHENTIC';
+            confidenceLevel = 'LOW';
+          }
+          
+          console.log('\n' + '='.repeat(60));
+          console.log(`FINAL SCORE (Frontend):`);
+          console.log(`  visual_prob = ${score.toFixed(4)} (${(score * 100).toFixed(2)}%)`);
+          console.log(`  Classification: ${classification} (Confidence: ${confidenceLevel})`);
+          console.log(`  Thresholds: >=0.66=Deepfake, >=0.33=Suspected, <0.33=Authentic`);
+          console.log(`  Job ID: ${jobId}`);
+          console.log(`  Displayed as: ${Math.round(score * 100)}%`);
+          console.log(`  Suspicious frames: ${resultData.suspiciousFrames?.length || 0}`);
+          if (resultData.suspiciousFrames?.length > 0) {
+            console.log(`  Frame scores:`, resultData.suspiciousFrames.map((f: any) => 
+              `${f.file || f.filename || 'unknown'}: ${((f.score ?? 0) * 100).toFixed(2)}%`
+            ));
+          }
+          console.log('='.repeat(60) + '\n');
+        }
+      } catch (e) {
+        console.error('Failed to fetch result', e);
+      }
+    };
+
+    fetchStatus();
+  }, [id, location.state]);
+
   return (
     <div className="min-h-screen bg-hero-gradient relative overflow-hidden">
       <ParticleBackground />
@@ -68,18 +209,31 @@ const Results = () => {
         <div className="container mx-auto px-4">
           <div className="max-w-4xl mx-auto space-y-8">
             {/* Header */}
-            <div className="text-center mb-8 animate-fade-in">
-              <h1 className="font-heading text-3xl md:text-4xl font-bold mb-2">Analysis Complete</h1>
-              <p className="text-muted-foreground">Report ID: {id}</p>
-            </div>
+              <div className="text-center mb-8 animate-fade-in">
+                <h1 className="font-heading text-3xl md:text-4xl font-bold mb-2">Analysis Complete</h1>
+                <p className="text-muted-foreground">Report ID: {id}</p>
+              </div>
 
             {/* Main Results */}
             <div className="grid md:grid-cols-2 gap-6">
               {/* Score Card */}
               <GlassCard className="flex flex-col items-center justify-center py-8 animate-fade-in-up">
-                <ConfidenceGauge score={demoResult.score} label={demoResult.label} />
+                <ConfidenceGauge
+                  score={result ? Math.round(((result.visual_prob ?? result.score ?? 0) * 100)) : demoResult.score}
+                  label={
+                    result
+                      ? ((result.visual_prob ?? result.score ?? 0) >= 0.66 ? 'deepfake' : (result.visual_prob ?? result.score ?? 0) >= 0.33 ? 'suspected' : 'authentic')
+                      : demoResult.label
+                  }
+                />
                 <div className="mt-6">
-                  <StatusBadge status={demoResult.label} />
+                  <StatusBadge
+                    status={
+                      result
+                        ? ((result.visual_prob ?? result.score ?? 0) >= 0.66 ? 'deepfake' : (result.visual_prob ?? result.score ?? 0) >= 0.33 ? 'suspected' : 'authentic')
+                        : demoResult.label
+                    }
+                  />
                 </div>
               </GlassCard>
 
@@ -125,23 +279,65 @@ const Results = () => {
 
             {/* Suspicious Frames */}
             <GlassCard className="animate-fade-in-up" style={{ animationDelay: '200ms' }}>
-              <h3 className="font-heading font-semibold text-lg mb-4">Suspicious Frames</h3>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {demoResult.suspiciousFrames.map((frame, index) => (
-                  <FrameThumbnail
-                    key={index}
-                    src={frame.src}
-                    timestamp={frame.timestamp}
-                    confidence={frame.confidence}
-                  />
-                ))}
-              </div>
+              <h3 className="font-heading font-semibold text-lg mb-6">Suspicious Frames</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {(result?.suspiciousFrames ?? demoResult.suspiciousFrames).map((frame: any, index: number) => {
+                    const jobId = (location.state as any)?.jobId || id;
+                    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+                    // frame.file is expected from backend (e.g. 'face_frame_00006_1.jpg')
+                    const fileName = frame.file || frame.filename || frame.src || '';
+                    // prefer DB-backed image id when available
+                    const imgSrc = frame.id ? `${API_URL}/images/${frame.id}` : (jobId && frame.file ? `${API_URL}/api/tmp/${jobId}/faces/${fileName}` : (frame.src || ''));
+                    const frameScore = frame.score ?? frame.confidence ?? 0;
+                    const scorePercent = Math.round(frameScore * 100);
+
+                    return (
+                      <div key={index} className="flex flex-col border rounded-lg overflow-hidden bg-card/50 hover:bg-card/70 transition-colors">
+                        {/* Large Image */}
+                        <div className="w-full aspect-video bg-muted relative overflow-hidden">
+                          <img 
+                            src={imgSrc} 
+                            alt={fileName} 
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjMwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNDAwIiBoZWlnaHQ9IjMwMCIgZmlsbD0iIzMzMzMzMyIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMTgiIGZpbGw9IiM2NjY2NjYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj5JbWFnZSBub3QgZm91bmQ8L3RleHQ+PC9zdmc+';
+                            }}
+                          />
+                          {/* Score Badge Overlay */}
+                          <div className="absolute top-2 right-2 bg-background/90 backdrop-blur-sm px-3 py-1.5 rounded-full border">
+                            <span className="text-lg font-bold font-mono">
+                              {frameScore !== undefined && frameScore !== null 
+                                ? `${scorePercent}%` 
+                                : frame.confidence !== undefined && frame.confidence !== null
+                                ? `${Math.round(frame.confidence * 100)}%`
+                                : 'N/A'}
+                            </span>
+                          </div>
+                        </div>
+                        {/* Frame Info */}
+                        <div className="p-4">
+                          <div className="font-medium text-sm mb-1 truncate" title={fileName}>
+                            {fileName}
+                          </div>
+                          {frame.timestamp && (
+                            <div className="text-xs text-muted-foreground">{frame.timestamp}</div>
+                          )}
+                          {frame.rank && (
+                            <div className="text-xs text-muted-foreground mt-1">
+                              Rank: #{frame.rank}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
             </GlassCard>
 
             {/* Analysis Explanation */}
             <GlassCard className="animate-fade-in-up" style={{ animationDelay: '300ms' }}>
               <h3 className="font-heading font-semibold text-lg mb-4">Analysis Details</h3>
-              <TerminalBox text={demoResult.explanation} />
+              <TerminalBox text={result ? generateAnalysisSummary(result) : demoResult.explanation} />
             </GlassCard>
           </div>
         </div>

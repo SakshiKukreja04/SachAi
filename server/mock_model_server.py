@@ -7,7 +7,8 @@ app = FastAPI()
 
 class InferRequest(BaseModel):
     jobId: str
-    framesDir: str
+    framesDir: Optional[str] = None
+    images: Optional[List[dict]] = None
     audioPath: str
 
 class SuspiciousFrame(BaseModel):
@@ -46,6 +47,35 @@ async def infer(request: InferRequest):
             {"time": "00:12"},
         ]
     
+    return InferResponse(
+        score=score,
+        label=label,
+        reason=reason,
+        suspiciousFrames=suspicious_frames
+    )
+
+
+@app.post("/infer_frames", response_model=InferResponse)
+async def infer_frames(payload: dict):
+    """Accepts `images` as array of {filename, b64} for testing."""
+    # For the mock, behave same as /infer
+    score = round(random.uniform(0.0, 1.0), 2)
+    if score > 0.7:
+        label = "Deepfake"
+        reason = "Simulated: High probability of synthetic face manipulation detected"
+    elif score > 0.4:
+        label = "Suspicious"
+        reason = "Simulated: Some artifacts detected but inconclusive"
+    else:
+        label = "Real"
+        reason = "Simulated: Video appears to be authentic"
+
+    suspicious_frames = []
+    if score > 0.5:
+        suspicious_frames = [
+            {"time": "00:05", "filename": (payload.get('images') or [])[0].get('filename') if payload.get('images') else None},
+        ]
+
     return InferResponse(
         score=score,
         label=label,

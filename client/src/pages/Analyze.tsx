@@ -20,39 +20,74 @@ const Analyze = () => {
   const [progress, setProgress] = useState(0);
 
   useEffect(() => {
-    // Simulate analysis progress
-    const stepDuration = 2000; // 2 seconds per step
-    
-    const stepInterval = setInterval(() => {
-      setCurrentStep((prev) => {
-        if (prev >= steps.length - 1) {
-          clearInterval(stepInterval);
-          // Navigate to results after completion
-          setTimeout(() => {
-            navigate('/results/demo-123');
-          }, 1000);
-          return prev;
-        }
-        return prev + 1;
-      });
-    }, stepDuration);
+    // If we have a jobId from the previous page, poll the backend status endpoint
+    const jobId = (location.state as any)?.jobId;
+    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
-    // Progress animation
-    const progressInterval = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(progressInterval);
-          return 100;
+    if (!jobId) {
+      // Fallback to simulated progress when no jobId
+      const stepDuration = 2000; // 2 seconds per step
+      const stepInterval = setInterval(() => {
+        setCurrentStep((prev) => {
+          if (prev >= steps.length - 1) {
+            clearInterval(stepInterval);
+            setTimeout(() => navigate('/results/demo-123'), 1000);
+            return prev;
+          }
+          return prev + 1;
+        });
+      }, stepDuration);
+
+      const progressInterval = setInterval(() => {
+        setProgress((prev) => {
+          if (prev >= 100) {
+            clearInterval(progressInterval);
+            return 100;
+          }
+          return prev + 1;
+        });
+      }, 80);
+
+      return () => {
+        clearInterval(stepInterval);
+        clearInterval(progressInterval);
+      };
+    }
+
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const resp = await fetch(`${API_URL}/api/status/${jobId}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (stopped) return;
+        setProgress(data.progress ?? 0);
+        // Map progress to step (approx)
+        if (data.progress >= 75) setCurrentStep(3);
+        else if (data.progress >= 50) setCurrentStep(2);
+        else if (data.progress >= 25) setCurrentStep(1);
+        else setCurrentStep(0);
+
+        if (data.status === 'done') {
+          // Navigate to results with jobId
+          navigate(`/results/${jobId}`, { state: { jobId } });
+        } else if (data.status === 'failed') {
+          alert(`Analysis failed: ${data.error || 'unknown error'}`);
         }
-        return prev + 1;
-      });
-    }, 80);
+      } catch (e) {
+        console.error('Status poll error', e);
+      }
+    };
+
+    const interval = setInterval(poll, 2000);
+    // initial poll
+    poll();
 
     return () => {
-      clearInterval(stepInterval);
-      clearInterval(progressInterval);
+      stopped = true;
+      clearInterval(interval);
     };
-  }, [navigate]);
+  }, [location.state, navigate]);
 
   return (
     <div className="min-h-screen bg-hero-gradient relative overflow-hidden">

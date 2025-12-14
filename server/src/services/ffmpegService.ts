@@ -2,6 +2,25 @@ import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs-extra';
 
+/** Resolve an ffmpeg binary path.
+ * Priority: `process.env.FFMPEG_PATH` -> `ffmpeg-static` package -> 'ffmpeg' on PATH
+ */
+function resolveFfmpegBinary(): string {
+  if (process.env.FFMPEG_PATH && process.env.FFMPEG_PATH.length > 0) {
+    return process.env.FFMPEG_PATH;
+  }
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const ff = require('ffmpeg-static');
+    if (ff && typeof ff === 'string') return ff;
+  } catch (e) {
+    // ffmpeg-static not installed, fall through to 'ffmpeg'
+  }
+
+  return 'ffmpeg';
+}
+
 /**
  * Extracts frames from a video using ffmpeg.
  * @param videoPath Path to the input video file
@@ -18,11 +37,17 @@ export async function extractFrames(videoPath: string, outDir: string, fps = 1):
 
     console.log('[ffmpeg] Extracting frames:', args.join(' '));
 
-    const ff = spawn('ffmpeg', args, { stdio: 'inherit' });
+    const ffPath = resolveFfmpegBinary();
+    console.log('[ffmpeg] using binary:', ffPath);
+    const ff = spawn(ffPath, args, { stdio: 'inherit' });
 
     ff.on('error', (err) => {
       console.error('[ffmpeg] spawn error:', err);
-      reject(err);
+      if ((err as any).code === 'ENOENT') {
+        reject(new Error(`ffmpeg not found (tried '${ffPath}'). Install ffmpeg or set FFMPEG_PATH, or install the 'ffmpeg-static' npm package.`));
+      } else {
+        reject(err);
+      }
     });
 
     ff.on('close', async (code) => {
@@ -68,11 +93,17 @@ export async function extractAudio(videoPath: string, outAudioPath: string): Pro
 
     console.log('[ffmpeg] Extracting audio:', args.join(' '));
 
-    const ff = spawn('ffmpeg', args, { stdio: 'inherit' });
+    const ffPath = resolveFfmpegBinary();
+    console.log('[ffmpeg] using binary for audio:', ffPath);
+    const ff = spawn(ffPath, args, { stdio: 'inherit' });
 
     ff.on('error', (err) => {
       console.error('[ffmpeg] spawn error (audio):', err);
-      reject(err);
+      if ((err as any).code === 'ENOENT') {
+        reject(new Error(`ffmpeg not found (tried '${ffPath}'). Install ffmpeg or set FFMPEG_PATH, or install the 'ffmpeg-static' npm package.`));
+      } else {
+        reject(err);
+      }
     });
 
     ff.on('close', (code) => {

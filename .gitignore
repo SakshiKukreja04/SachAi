@@ -1,0 +1,99 @@
+# Root level ignores
+
+# Logs
+*.log
+dev.log
+.cursor/debug.log
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-*
+
+# Temporary folders
+tmp/
+temp/
+*.tmp
+
+# Model checkpoints and large files (don't commit trained models)
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.pb
+*.onnx
+checkpoint*.pth
+models/*.pth
+**/checkpoint*.pth
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+*.egg
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Sensitive data
+*.key
+*.pem
+*.cert
+secrets/
+credentials/
+
+# Large datasets (don't commit training data)
+data/
+datasets/
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.zip
+*.tar.gz
+
+# FaceForensics specific (large files)
+FaceForensics/
+**/faces/
+**/training_data/
+**/downloaded_videos/
+
+# Empty folders
+New folder/
+New folder (2)/
+New folder (3)/
+
+# Test outputs
+test-results/
+coverage/
+
