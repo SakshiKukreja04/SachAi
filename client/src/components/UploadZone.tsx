@@ -8,10 +8,61 @@ interface UploadZoneProps {
   isLoading?: boolean;
 }
 
+// URL validation helpers
+const isValidVideoUrl = (url: string): boolean => {
+  if (!url.trim()) return false;
+  
+  try {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname.toLowerCase();
+    
+    // YouTube patterns
+    if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+      return true;
+    }
+    
+    // Instagram patterns
+    if (hostname.includes('instagram.com') && url.includes('/reel/')) {
+      return true;
+    }
+    
+    // Vimeo patterns
+    if (hostname.includes('vimeo.com')) {
+      return true;
+    }
+    
+    // Generic video URL (fallback)
+    return url.match(/\.(mp4|mov|avi|mkv|webm)(\?|$)/i) !== null;
+  } catch {
+    return false;
+  }
+};
+
+const getPlatformName = (url: string): string => {
+  try {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname.toLowerCase();
+    
+    if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+      return 'YouTube';
+    }
+    if (hostname.includes('instagram.com')) {
+      return 'Instagram Reel';
+    }
+    if (hostname.includes('vimeo.com')) {
+      return 'Vimeo';
+    }
+    return 'Video';
+  } catch {
+    return 'Video';
+  }
+};
+
 export const UploadZone = ({ onUpload, isLoading }: UploadZoneProps) => {
   const [isDragging, setIsDragging] = useState(false);
   const [url, setUrl] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [urlError, setUrlError] = useState<string>('');
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -45,13 +96,37 @@ export const UploadZone = ({ onUpload, isLoading }: UploadZoneProps) => {
 
   const handleAnalyze = () => {
     if (selectedFile) {
+      setUrlError('');
       onUpload(selectedFile, null);
     } else if (url.trim()) {
-      onUpload(null, url.trim());
+      if (isValidVideoUrl(url)) {
+        setUrlError('');
+        onUpload(null, url.trim());
+      } else {
+        setUrlError('Please enter a valid YouTube, Instagram Reel, or Vimeo URL');
+      }
     }
   };
 
-  const canAnalyze = selectedFile || url.trim();
+  const handleUrlChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newUrl = e.target.value;
+    setUrl(newUrl);
+    setSelectedFile(null);
+    
+    // Clear error when user starts typing
+    if (urlError) {
+      setUrlError('');
+    }
+    
+    // Validate on blur or when URL looks complete
+    if (newUrl.trim() && newUrl.includes('.')) {
+      if (!isValidVideoUrl(newUrl)) {
+        setUrlError('Invalid URL format. Supported: YouTube, Instagram Reels, Vimeo');
+      }
+    }
+  };
+
+  const canAnalyze = selectedFile || (url.trim() && isValidVideoUrl(url));
 
   return (
     <div className="w-full max-w-2xl mx-auto space-y-6">
@@ -117,26 +192,40 @@ export const UploadZone = ({ onUpload, isLoading }: UploadZoneProps) => {
       </div>
 
       {/* URL Input */}
-      <div className="relative">
-        <div className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground">
-          <LinkIcon className="w-5 h-5" />
+      <div className="space-y-2">
+        <div className="relative">
+          <div className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground">
+            <LinkIcon className="w-5 h-5" />
+          </div>
+          <input
+            type="url"
+            value={url}
+            onChange={handleUrlChange}
+            onBlur={() => {
+              if (url.trim() && !isValidVideoUrl(url)) {
+                setUrlError('Invalid URL. Supported: YouTube, Instagram Reels, Vimeo');
+              }
+            }}
+            placeholder="Paste video URL (YouTube, Instagram Reels, Vimeo)"
+            className={cn(
+              'w-full h-12 pl-12 pr-4 rounded-lg',
+              'bg-card/60 backdrop-blur-sm border',
+              urlError ? 'border-destructive' : 'border-border',
+              'text-foreground placeholder:text-muted-foreground',
+              'focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent',
+              'transition-all duration-300'
+            )}
+          />
         </div>
-        <input
-          type="url"
-          value={url}
-          onChange={(e) => {
-            setUrl(e.target.value);
-            if (e.target.value) setSelectedFile(null);
-          }}
-          placeholder="Paste video URL (YouTube, Vimeo, etc.)"
-          className={cn(
-            'w-full h-12 pl-12 pr-4 rounded-lg',
-            'bg-card/60 backdrop-blur-sm border border-border',
-            'text-foreground placeholder:text-muted-foreground',
-            'focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent',
-            'transition-all duration-300'
-          )}
-        />
+        {url && isValidVideoUrl(url) && (
+          <p className="text-xs text-muted-foreground flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+            {getPlatformName(url)} URL detected
+          </p>
+        )}
+        {urlError && (
+          <p className="text-xs text-destructive">{urlError}</p>
+        )}
       </div>
 
       {/* Analyze Button */}

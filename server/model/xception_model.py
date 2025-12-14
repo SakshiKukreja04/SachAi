@@ -72,7 +72,7 @@ def load_model(checkpoint_path: Optional[str] = None, device: str = "cpu") -> nn
             if "state_dict" in state:
                 state = state["state_dict"]
             model.load_state_dict(state)
-            print(f"✓ Successfully loaded checkpoint from {checkpoint_path}")
+            print(f"[OK] Successfully loaded checkpoint from {checkpoint_path}")
         else:
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 

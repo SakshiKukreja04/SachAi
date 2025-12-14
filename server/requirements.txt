@@ -12,3 +12,7 @@ opencv-python
 tqdm
 requests
 opencv-contrib-python
+yt-dlp>=2023.12.30
+librosa
+# mediapipe - Optional: Install separately if needed for better mouth landmark detection
+# pip install mediapipe (may not be available for Python 3.13+)

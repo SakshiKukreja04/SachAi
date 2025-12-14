@@ -26,8 +26,16 @@ export const HistoryCard = ({ id, date, score, label, thumbnail, className, dela
     >
       <div className="flex gap-4">
         {thumbnail && (
-          <div className="w-24 h-16 rounded-lg overflow-hidden flex-shrink-0 border border-border">
-            <img src={thumbnail} alt="Video thumbnail" className="w-full h-full object-cover" />
+          <div className="w-24 h-16 rounded-lg overflow-hidden flex-shrink-0 border border-border bg-muted">
+            <img 
+              src={thumbnail} 
+              alt="Video thumbnail" 
+              className="w-full h-full object-cover"
+              onError={(e) => {
+                // Hide image on error
+                (e.target as HTMLImageElement).style.display = 'none';
+              }}
+            />
           </div>
         )}
         

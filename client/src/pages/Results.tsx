@@ -20,24 +20,33 @@ const generateAnalysisSummary = (result: any): string => {
 > Please refresh the page to see updated results`;
   }
 
+  // Use final_prob if available (aggregated score), otherwise fall back to visual_prob
+  const finalProb = result.final_prob ?? result.visual_prob ?? result.score ?? 0;
   const visualProb = result.visual_prob ?? result.score ?? 0;
-  const scorePercent = Math.round(visualProb * 100);
+  const audioSyncScore = result.audio_sync_score ?? null;
+  const scorePercent = Math.round(finalProb * 100);
   const numFrames = result.meta?.num_frames ?? result.visual_scores?.length ?? 0;
   const suspiciousFrames = result.suspiciousFrames || [];
   const visualScores = result.visual_scores || [];
+  const explanations = result.explanations || [];
 
-  // Determine classification
-  let classification: string;
-  let confidenceLevel: string;
-  if (visualProb >= 0.66) {
-    classification = 'DEEPFAKE';
-    confidenceLevel = 'HIGH';
-  } else if (visualProb >= 0.33) {
-    classification = 'SUSPECTED';
-    confidenceLevel = 'MEDIUM';
-  } else {
-    classification = 'AUTHENTIC';
-    confidenceLevel = 'LOW';
+  // Use classification from server if available, otherwise compute
+  let classification: string = result.classification || 'UNKNOWN';
+  let confidenceLevel: string = result.confidence_level || 'UNKNOWN';
+  
+  if (classification === 'UNKNOWN') {
+    // Fallback classification logic (matching server fake_ratio thresholds)
+    // fake_ratio approach: <0.3=REAL, 0.3-0.59=SUSPECTED, >=0.6=FAKE
+    if (finalProb < 0.3) {
+      classification = 'AUTHENTIC';
+      confidenceLevel = 'HIGH';
+    } else if (finalProb < 0.6) {
+      classification = 'SUSPECTED';
+      confidenceLevel = 'MEDIUM';
+    } else {
+      classification = 'DEEPFAKE';
+      confidenceLevel = 'HIGH';
+    }
   }
 
   // Calculate statistics
@@ -48,13 +57,32 @@ const generateAnalysisSummary = (result: any): string => {
 
   // Build summary
   let summary = `Analysis complete. Deepfake detection results:\n\n`;
-  summary += `> Overall probability: ${scorePercent}% (${visualProb.toFixed(4)})\n`;
+  summary += `> Final probability (of being fake): ${scorePercent}% (${finalProb.toFixed(4)})\n`;
+  summary += `>   Note: This is the probability the video is AI-generated, NOT model accuracy\n`;
+  summary += `> Visual probability: ${Math.round(visualProb * 100)}% (${visualProb.toFixed(4)})\n`;
+  
+  if (audioSyncScore !== null) {
+    const audioSyncPercent = Math.round(audioSyncScore * 100);
+    summary += `> Audio sync score: ${audioSyncPercent}% (${audioSyncScore.toFixed(4)})\n`;
+    summary += `>   ${audioSyncScore >= 0.6 ? 'Good' : audioSyncScore >= 0.3 ? 'Moderate' : 'Poor'} lip-sync quality\n`;
+  } else {
+    summary += `> Audio sync score: Not available\n`;
+  }
+  
   summary += `> Classification: ${classification} (${confidenceLevel} confidence)\n`;
   summary += `> Frames analyzed: ${numFrames}\n`;
   
   if (frameScores.length > 0) {
     summary += `> Score range: ${Math.round(minScore * 100)}% - ${Math.round(maxScore * 100)}%\n`;
     summary += `> Average frame score: ${Math.round(meanScore * 100)}%\n`;
+  }
+  
+  // Add explanations if available
+  if (explanations.length > 0) {
+    summary += `\n> Detailed Analysis:\n`;
+    explanations.forEach((exp: string) => {
+      summary += `  - ${exp}\n`;
+    });
   }
 
   if (suspiciousFrames.length > 0) {
@@ -71,14 +99,20 @@ const generateAnalysisSummary = (result: any): string => {
     });
   }
 
-  // Add recommendation
+  // Add recommendation based on final probability (fake_ratio thresholds)
   summary += `\nRecommendation: `;
-  if (visualProb >= 0.66) {
-    summary += `This video shows strong signs of AI-generated manipulation (${scorePercent}% probability). Exercise caution before sharing or using this content.`;
-  } else if (visualProb >= 0.33) {
-    summary += `Some indicators of potential manipulation detected (${scorePercent}% probability). Review the suspicious frames and consider additional verification.`;
+  if (finalProb < 0.3) {
+    summary += `The video appears to be AUTHENTIC (${scorePercent}% fake frame ratio). Low likelihood of AI manipulation.`;
+  } else if (finalProb < 0.6) {
+    summary += `SUSPECTED manipulation detected (${scorePercent}% fake frame ratio). Review the suspicious frames and audio sync issues.`;
+    if (audioSyncScore !== null && audioSyncScore < 0.6) {
+      summary += ` Audio-visual sync mismatches detected, which may indicate deepfake manipulation.`;
+    }
   } else {
-    summary += `The video appears to be authentic (${scorePercent}% probability of being fake). Low confidence in deepfake detection.`;
+    summary += `This video shows strong signs of AI-generated manipulation (${scorePercent}% fake frame ratio). Exercise caution before sharing or using this content.`;
+    if (audioSyncScore !== null && audioSyncScore < 0.6) {
+      summary += ` Significant audio-visual sync mismatches support this classification.`;
+    }
   }
 
   if (result.meta?.model) {
@@ -120,11 +154,41 @@ const Results = () => {
   const [feedback, setFeedback] = useState<'helpful' | 'not-accurate' | null>(null);
   const [result, setResult] = useState<any | null>(null);
 
-  const handleSaveReport = () => {
-    toast({
-      title: 'Report Saved',
-      description: 'Your analysis report has been downloaded.',
-    });
+  const handleSaveReport = async () => {
+    if (!id) {
+      toast({
+        title: 'Error',
+        description: 'No report ID available.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+      const response = await fetch(`${API_URL}/api/history/${id}/save`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to save report');
+      }
+
+      toast({
+        title: 'Report Saved',
+        description: 'Your analysis report has been saved to history.',
+      });
+    } catch (error) {
+      console.error('Error saving report:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to save report. Please try again.',
+        variant: 'destructive',
+      });
+    }
   };
 
   const handleShare = () => {
@@ -166,22 +230,24 @@ const Results = () => {
         if (score !== undefined && score !== null) {
           let classification = 'UNKNOWN';
           let confidenceLevel = 'UNKNOWN';
-          if (score >= 0.66) {
+          // Updated thresholds: Using fake_ratio approach
+          // fake_ratio: <0.3=REAL, 0.3-0.59=SUSPECTED, >=0.6=FAKE
+          if (score >= 0.6) {
             classification = 'DEEPFAKE';
             confidenceLevel = 'HIGH';
-          } else if (score >= 0.33) {
+          } else if (score >= 0.3) {
             classification = 'SUSPECTED';
             confidenceLevel = 'MEDIUM';
           } else {
             classification = 'AUTHENTIC';
-            confidenceLevel = 'LOW';
+            confidenceLevel = 'HIGH';
           }
           
           console.log('\n' + '='.repeat(60));
           console.log(`FINAL SCORE (Frontend):`);
-          console.log(`  visual_prob = ${score.toFixed(4)} (${(score * 100).toFixed(2)}%)`);
+          console.log(`  visual_prob (fake_ratio) = ${score.toFixed(4)} (${(score * 100).toFixed(2)}%)`);
           console.log(`  Classification: ${classification} (Confidence: ${confidenceLevel})`);
-          console.log(`  Thresholds: >=0.66=Deepfake, >=0.33=Suspected, <0.33=Authentic`);
+          console.log(`  Thresholds (fake_ratio): >=0.6=FAKE, 0.3-0.59=SUSPECTED, <0.3=REAL`);
           console.log(`  Job ID: ${jobId}`);
           console.log(`  Displayed as: ${Math.round(score * 100)}%`);
           console.log(`  Suspicious frames: ${resultData.suspiciousFrames?.length || 0}`);
@@ -222,7 +288,7 @@ const Results = () => {
                   score={result ? Math.round(((result.visual_prob ?? result.score ?? 0) * 100)) : demoResult.score}
                   label={
                     result
-                      ? ((result.visual_prob ?? result.score ?? 0) >= 0.66 ? 'deepfake' : (result.visual_prob ?? result.score ?? 0) >= 0.33 ? 'suspected' : 'authentic')
+                      ? ((result.final_prob ?? result.visual_prob ?? result.score ?? 0) >= 0.6 ? 'deepfake' : (result.final_prob ?? result.visual_prob ?? result.score ?? 0) >= 0.3 ? 'suspected' : 'authentic')
                       : demoResult.label
                   }
                 />
@@ -230,7 +296,7 @@ const Results = () => {
                   <StatusBadge
                     status={
                       result
-                        ? ((result.visual_prob ?? result.score ?? 0) >= 0.66 ? 'deepfake' : (result.visual_prob ?? result.score ?? 0) >= 0.33 ? 'suspected' : 'authentic')
+                        ? ((result.final_prob ?? result.visual_prob ?? result.score ?? 0) >= 0.6 ? 'deepfake' : (result.final_prob ?? result.visual_prob ?? result.score ?? 0) >= 0.3 ? 'suspected' : 'authentic')
                         : demoResult.label
                     }
                   />

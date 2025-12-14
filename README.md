@@ -10,6 +10,7 @@ A comprehensive deepfake detection system using Xception neural network, featuri
 - **Face Extraction**: Automatic face detection and cropping from video frames
 - **Batch Processing**: Efficient batch inference for multiple frames
 - **Training Pipeline**: Complete workflow for training custom models on FaceForensics dataset
+- **Multi-Platform Support**: Analyze videos from YouTube, Instagram Reels, Vimeo, or upload directly
 
 ## 📁 Project Structure
 
@@ -43,7 +44,29 @@ SachAi/
 - Node.js 18+
 - Python 3.8+
 - FFmpeg (for video processing)
+- yt-dlp (for downloading videos from YouTube, Instagram, Vimeo)
 - MongoDB (optional)
+
+### Installing yt-dlp
+
+**Windows:**
+```bash
+pip install yt-dlp
+```
+
+**macOS:**
+```bash
+brew install yt-dlp
+# or
+pip install yt-dlp
+```
+
+**Linux:**
+```bash
+pip install yt-dlp
+# or
+sudo apt-get install yt-dlp
+```
 
 ## 🚀 Quick Start
 

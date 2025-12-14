@@ -26,6 +26,18 @@ desktop.ini
 tmp/
 temp/
 *.tmp
+calibration/
+calibration_results/
+calibration_results_2/
+calibration_results_3/
+calibration_results_4/
+calibration_results_5/
+calibration_results_6/
+calibration_results_7/
+calibration_results_8/
+calibration_results_9/
+calibration_results_10/
+calibration_data/
 
 # Model checkpoints and large files (don't commit trained models)
 *.pth

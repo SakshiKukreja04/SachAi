@@ -38,6 +38,27 @@ async function downloadVideo(url: string, outputPath: string): Promise<void> {
   });
 }
 
+// Detect platform from URL
+function detectPlatform(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname.toLowerCase();
+    
+    if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+      return 'YouTube';
+    }
+    if (hostname.includes('instagram.com')) {
+      return 'Instagram';
+    }
+    if (hostname.includes('vimeo.com')) {
+      return 'Vimeo';
+    }
+    return 'Unknown';
+  } catch {
+    return 'Unknown';
+  }
+}
+
 // Download video if videoUrl is provided
 async function ensureVideoFile(jobId: string, filePath?: string, videoUrl?: string): Promise<string> {
   if (filePath && fs.existsSync(filePath)) {
@@ -47,20 +68,276 @@ async function ensureVideoFile(jobId: string, filePath?: string, videoUrl?: stri
   if (videoUrl) {
     const jobDir = getTempJobDir(jobId);
     const videoPath = path.join(jobDir, 'video.mp4');
+    const platform = detectPlatform(videoUrl);
 
-    logger.info(`Downloading video from ${videoUrl}...`);
+    logger.info(`Downloading video from ${platform} (${videoUrl})...`);
     
-    // Try yt-dlp first
-    try {
-      execSync(`yt-dlp -f best -o "${videoPath}" "${videoUrl}"`, { stdio: 'inherit' });
-      return videoPath;
-    } catch (err) {
-      logger.warn('yt-dlp failed, falling back to HTTP download');
+    // Try multiple methods to run yt-dlp with improved detection
+    // Priority: Python module (most reliable) > direct command > executable
+    const ytDlpMethods = [
+      { cmd: 'python -m yt_dlp', name: 'python -m yt_dlp', test: 'python -m yt_dlp --version' },
+      { cmd: 'py -m yt_dlp', name: 'py -m yt_dlp', test: 'py -m yt_dlp --version' },
+      { cmd: 'python3 -m yt_dlp', name: 'python3 -m yt_dlp', test: 'python3 -m yt_dlp --version' },
+      { cmd: 'yt-dlp', name: 'yt-dlp', test: 'yt-dlp --version' },
+      { cmd: 'yt-dlp.exe', name: 'yt-dlp.exe', test: 'yt-dlp.exe --version' },
+    ];
+    
+    let ytDlpExecutable = '';
+    let ytDlpVersion = '';
+    let pythonCommand: string | null = null; // Store the command that works (e.g., 'python', 'py')
+    
+    logger.info('Detecting yt-dlp installation...');
+    
+    // Find Python executable directly using sys.executable (most reliable method)
+    // This avoids PATH issues completely
+    let pythonExecutable: string | null = null;
+    const pythonCommands = ['python', 'py', 'python3'];
+    
+    logger.info('Finding Python executable using sys.executable...');
+    for (const pyCmd of pythonCommands) {
       try {
-        await downloadVideo(videoUrl, videoPath);
-        return videoPath;
-      } catch (downloadErr) {
-        throw new Error(`Failed to download video: ${downloadErr}`);
+        const testOptions: any = { 
+          stdio: 'pipe',
+          encoding: 'utf8' as BufferEncoding,
+          timeout: 10000, // 10 second timeout
+        };
+        
+        if (process.platform === 'win32') {
+          testOptions.shell = true;
+        }
+        
+        // Get Python executable path directly
+        const pythonPath = execSync(`${pyCmd} -c "import sys; print(sys.executable)"`, testOptions).toString().trim();
+        
+        if (pythonPath && fs.existsSync(pythonPath)) {
+          pythonExecutable = pythonPath;
+          pythonCommand = pyCmd; // Store the command that works (e.g., 'python')
+          logger.info(`[OK] Found Python executable: ${pythonExecutable}`);
+          logger.info(`  Python command: ${pythonCommand}`);
+          
+          // Verify yt_dlp is installed by running --version (this is what actually works)
+          // Don't check __version__ attribute as it may not exist in newer versions
+          try {
+            const versionOutput = execSync(`"${pythonExecutable}" -m yt_dlp --version`, testOptions).toString().trim();
+            if (versionOutput) {
+              ytDlpVersion = versionOutput;
+              ytDlpExecutable = `"${pythonExecutable}" -m yt_dlp`;
+              logger.info(`[OK] yt-dlp is installed and working`);
+              logger.info(`  Python: ${pythonExecutable}`);
+              logger.info(`  Python command: ${pythonCommand}`);
+              logger.info(`  yt-dlp version: ${ytDlpVersion}`);
+              logger.info(`  Command: ${ytDlpExecutable}`);
+              break;
+            } else {
+              throw new Error('No version output');
+            }
+          } catch (versionErr: any) {
+            logger.warn(`Python found but yt_dlp --version failed for ${pythonExecutable}`);
+            logger.debug(`Version check error: ${versionErr.message}`);
+            logger.debug(`stderr: ${versionErr.stderr?.toString() || 'none'}`);
+            logger.debug(`stdout: ${versionErr.stdout?.toString() || 'none'}`);
+            pythonExecutable = null; // Reset to try next Python
+            pythonCommand = null;
+            continue;
+          }
+        }
+      } catch (err: any) {
+        logger.debug(`Python command '${pyCmd}' failed: ${err.message}`);
+        continue;
+      }
+    }
+    
+    if (!pythonExecutable || !ytDlpExecutable || !pythonCommand) {
+      // Provide more helpful error message with installation instructions
+      const errorMessage = 
+        `yt-dlp is not installed or Python executable could not be found. Please install it to download videos from ${platform}.\n\n` +
+        `Installation instructions:\n` +
+        `1. Install using pip: pip install yt-dlp\n` +
+        `2. Or install using pip with user flag: pip install --user yt-dlp\n` +
+        `3. After installation, verify with: python -m yt_dlp --version\n` +
+        `4. Make sure Python is installed and accessible\n\n` +
+        `Note: If you just installed yt-dlp, you may need to restart the server for it to be detected.`;
+      
+      logger.error(errorMessage);
+      throw new Error(errorMessage);
+    }
+    
+    // Try yt-dlp download (supports YouTube, Instagram, Vimeo, and many others)
+    try {
+      // Use yt-dlp with better error handling using spawn
+      // -f bestvideo+bestaudio/best: Select best quality
+      // --merge-output-format mp4: Ensure MP4 output
+      // --no-playlist: Download only single video, not playlist
+      // --quiet: Reduce output noise
+      // --no-warnings: Suppress warnings
+      const ytDlpArgs = [
+        '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        '--merge-output-format', 'mp4',
+        '--no-playlist',
+        '--quiet',
+        '--no-warnings',
+        '-o', videoPath,
+        videoUrl
+      ];
+      
+      logger.info(`Downloading video using: ${ytDlpExecutable}`);
+      logger.info(`  URL: ${videoUrl}`);
+      logger.info(`  Output: ${videoPath}`);
+      
+      // Use Python wrapper script with 'python' from PATH (like runPythonPreprocessor does)
+      // runPythonPreprocessor successfully uses spawn('python', [...]) - same pattern!
+      const downloadResult = await new Promise<string>((resolve, reject) => {
+        const pythonPath = pythonExecutable!.replace(/^"|"$/g, ''); // Absolute path for wrapper
+        const pyCmd = pythonCommand!; // Command from PATH (e.g., 'python')
+        const wrapperScript = path.join(__dirname, '../../scripts/download_video.py');
+        const absoluteWrapperScript = path.resolve(wrapperScript);
+        
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/0d4845cb-1250-48f7-9afb-15804a297482',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'processor.ts:189',message:'Before spawn - using python from PATH with wrapper',data:{pythonCommand:pyCmd,pythonPath,wrapperScript:absoluteWrapperScript,wrapperExists:fs.existsSync(absoluteWrapperScript),pathExists:fs.existsSync(pythonPath),platform:process.platform},timestamp:Date.now(),sessionId:'debug-session',runId:'run8',hypothesisId:'R'})}).catch(()=>{});
+        // #endregion
+        
+        if (!fs.existsSync(absoluteWrapperScript)) {
+          reject(new Error(`Python wrapper script not found: ${absoluteWrapperScript}`));
+          return;
+        }
+        
+        logger.info(`Executing yt-dlp via Python wrapper (using 'python' from PATH like preprocessor):`);
+        logger.info(`  Python command: ${pyCmd}`);
+        logger.info(`  Python path: ${pythonPath}`);
+        logger.info(`  Wrapper: ${absoluteWrapperScript}`);
+        logger.info(`  Output: ${videoPath}`);
+        logger.info(`  URL: ${videoUrl}`);
+        
+        // Use spawn with 'python' from PATH (same as runPythonPreprocessor)
+        // Pass wrapper script and args - Python subprocess handles paths with spaces
+        const args = [
+          absoluteWrapperScript,
+          pythonPath,  // Pass absolute path as argument to wrapper
+          videoPath,
+          videoUrl
+        ];
+        
+        const spawnOptions: any = {
+          cwd: path.join(__dirname, '../../'),  // Same as runPythonPreprocessor
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: {
+            ...process.env,
+            PYTHONIOENCODING: 'utf-8',
+            PYTHONUNBUFFERED: '1'
+          }
+        };
+        
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/0d4845cb-1250-48f7-9afb-15804a297482',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'processor.ts:210',message:'About to spawn python from PATH with wrapper',data:{hasShell:false,platform:process.platform,argsCount:args.length,pythonCommand:pyCmd},timestamp:Date.now(),sessionId:'debug-session',runId:'run8',hypothesisId:'R'})}).catch(()=>{});
+        // #endregion
+        
+        const pythonProcess = spawn(pyCmd, args, spawnOptions);
+        
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/0d4845cb-1250-48f7-9afb-15804a297482',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'processor.ts:217',message:'After spawn call',data:{spawned:!!pythonProcess,pid:pythonProcess?.pid},timestamp:Date.now(),sessionId:'debug-session',runId:'run8',hypothesisId:'R'})}).catch(()=>{});
+        // #endregion
+        
+        let stdout = '';
+        let stderr = '';
+        
+        if (pythonProcess.stdout) {
+          pythonProcess.stdout.on('data', (data: Buffer) => {
+            const text = data.toString();
+            stdout += text;
+            // Log progress and success messages
+            if (text.includes('SUCCESS') || text.includes('%') || text.includes('Downloading')) {
+              logger.info(`Python wrapper: ${text.trim()}`);
+            }
+          });
+        }
+        
+        if (pythonProcess.stderr) {
+          pythonProcess.stderr.on('data', (data: Buffer) => {
+            const text = data.toString();
+            stderr += text;
+            // Log all stderr for debugging
+            logger.warn(`Python wrapper stderr: ${text.trim()}`);
+          });
+        }
+        
+        pythonProcess.on('close', (code) => {
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/0d4845cb-1250-48f7-9afb-15804a297482',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'processor.ts:231',message:'Python wrapper close event',data:{code,fileExists:fs.existsSync(videoPath),stdoutLength:stdout.length,stderrLength:stderr.length,stdout:stdout.substring(0,200),stderr:stderr.substring(0,200)},timestamp:Date.now(),sessionId:'debug-session',runId:'run8',hypothesisId:'R'})}).catch(()=>{});
+          // #endregion
+          
+          if (code === 0) {
+            // Success - verify file exists
+            if (fs.existsSync(videoPath)) {
+              const stats = fs.statSync(videoPath);
+              logger.info(`[OK] Successfully downloaded ${platform} video: ${(stats.size / (1024 * 1024)).toFixed(2)} MB`);
+              resolve(videoPath);
+            } else {
+              logger.error(`Python wrapper completed with code 0 but video file not found at: ${videoPath}`);
+              logger.error(`stdout: ${stdout}`);
+              logger.error(`stderr: ${stderr}`);
+              reject(new Error('yt-dlp completed but video file not found'));
+            }
+          } else {
+            // Error - log details
+            logger.error(`Python wrapper failed with exit code: ${code}`);
+            logger.error(`stdout: ${stdout}`);
+            logger.error(`stderr: ${stderr}`);
+            logger.error(`Python command used: ${pyCmd}`);
+            
+            const errorMsg = stderr || stdout || 'Unknown error';
+            if (errorMsg.toLowerCase().includes('not found') || errorMsg.toLowerCase().includes('enoent')) {
+              reject(new Error(
+                `Failed to execute yt-dlp using Python command: ${pyCmd}\n` +
+                `This usually means yt-dlp is not installed in this Python environment.\n` +
+                `Please install it: ${pyCmd} -m pip install yt-dlp`
+              ));
+            } else {
+              reject(new Error(`yt-dlp download failed: ${errorMsg}`));
+            }
+          }
+        });
+        
+        pythonProcess.on('error', (err) => {
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/0d4845cb-1250-48f7-9afb-15804a297482',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'processor.ts:264',message:'Python wrapper spawn error',data:{errorMessage:err.message,errorCode:(err as any).code,errorName:err.name,pythonCommand:pyCmd,platform:process.platform},timestamp:Date.now(),sessionId:'debug-session',runId:'run8',hypothesisId:'R'})}).catch(()=>{});
+          // #endregion
+          
+          logger.error(`Python wrapper spawn error: ${err.message}`);
+          logger.error(`Python command used: ${pyCmd}`);
+          if (err.message.includes('ENOENT') || err.message.includes('not found')) {
+            reject(new Error(
+              `Failed to execute Python command: ${pyCmd}\n` +
+              `Please verify Python is installed and in your system PATH.`
+            ));
+          } else {
+            reject(new Error(`Python wrapper execution error: ${err.message}`));
+          }
+        });
+      });
+      
+      return downloadResult;
+      
+    } catch (err: any) {
+      const errorMsg = err.message || String(err);
+      logger.error(`yt-dlp failed for ${platform}: ${errorMsg}`);
+      
+      // If yt-dlp is installed but failed, try HTTP fallback for direct video URLs only
+      if (videoUrl.match(/\.(mp4|mov|avi|mkv|webm)(\?|$)/i)) {
+        logger.warn('Falling back to HTTP download for direct video URL');
+        try {
+          await downloadVideo(videoUrl, videoPath);
+          if (fs.existsSync(videoPath)) {
+            return videoPath;
+          }
+        } catch (downloadErr) {
+          throw new Error(`Failed to download video: ${downloadErr}. yt-dlp error: ${errorMsg}`);
+        }
+      } else {
+        throw new Error(
+          `Failed to download from ${platform}. ` +
+          `Error: ${errorMsg}. ` +
+          `Make sure the URL is valid and accessible.`
+        );
       }
     }
   }
@@ -104,8 +381,39 @@ async function runPythonPreprocessor(jobId: string, videoPath: string): Promise<
     logger.info(`Spawning Python preprocessor for job ${jobId}...`);
     // The Python script expects `--out` to be the base tmp dir (it will create a subdir with jobId).
     // Pass the parent directory of the job dir so the script writes to: <out>/<jobId>/faces
+    // Explicitly pass landmarks path to ensure it's saved
+    // The preprocessor expects --out to be the base directory, and it creates <out>/<jobId>
+    // So we pass the parent of jobDir as --out
     const outBase = path.dirname(jobDir);
-    const py = spawn('python', ['ml/face_preprocess.py', '--video', videoPath, '--out', outBase, '--jobId', jobId, '--fps', '1', '--workers', '2'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    
+    // Use absolute paths to avoid any path resolution issues
+    const absoluteVideoPath = path.resolve(videoPath);
+    const absoluteOutBase = path.resolve(outBase);
+    const absoluteLandmarksPath = path.resolve(landmarksPath);
+    
+    logger.info(`Preprocessor paths:`);
+    logger.info(`  Video: ${absoluteVideoPath}`);
+    logger.info(`  Out base: ${absoluteOutBase}`);
+    logger.info(`  Job ID: ${jobId}`);
+    logger.info(`  Landmarks path: ${absoluteLandmarksPath}`);
+    
+    const py = spawn('python', [
+      'ml/face_preprocess.py', 
+      '--video', absoluteVideoPath, 
+      '--out', absoluteOutBase, 
+      '--jobId', jobId, 
+      '--fps', '1', 
+      '--workers', '2',
+      '--landmarks', absoluteLandmarksPath
+    ], { 
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: path.join(__dirname, '../../'),  // Run from server directory
+      env: {
+        ...process.env,
+        PYTHONIOENCODING: 'utf-8',  // Force UTF-8 encoding for Python output
+        PYTHONUNBUFFERED: '1'  // Unbuffered output for better logging
+      }
+    });
 
     let stdout = '';
     let stderr = '';
@@ -126,6 +434,20 @@ async function runPythonPreprocessor(jobId: string, videoPath: string): Promise<
       if (code === 0) {
         // Preprocessor completed successfully. It uploads face crops to MongoDB
         logger.info(`Preprocessor exited successfully for job ${jobId}`);
+        
+        // Verify landmarks file was created
+        if (fs.existsSync(landmarksPath)) {
+          const stats = fs.statSync(landmarksPath);
+          logger.info(`Landmarks file verified: ${landmarksPath} (${stats.size} bytes)`);
+        } else {
+          logger.warn(`Landmarks file not found at ${landmarksPath} after preprocessor completion`);
+          // Try alternative location
+          const altPath = path.join(path.dirname(jobDir), jobId, 'landmarks.json');
+          if (fs.existsSync(altPath)) {
+            logger.info(`Found landmarks at alternative location: ${altPath}`);
+          }
+        }
+        
         resolve({ facesDir, landmarksPath });
       } else {
         reject(new Error(`Preprocessor exited with code ${code}: ${stderr || stdout}`));
@@ -156,12 +478,96 @@ async function callModelServer(jobId: string, images: any[], batchSize = 32): Pr
     try { const fs = require('fs'); fs.appendFileSync('c:/SachAi/.cursor/debug.log', JSON.stringify({ location: 'processor.ts:155', message: 'Before model server call', data: { jobId, facesDir, imageCount: images.length, modelServerUrl: MODEL_SERVER_URL, imageFilenames: images.slice(0, 3).map((img: any) => img.filename) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) + '\n'); } catch {}
     // #endregion
     
-    // Send faces_folder path to Flask server (which expects a directory path)
-    const response = await axios.post(`${MODEL_SERVER_URL}/infer_frames`, {
+    // Get audio path and landmarks path for sync analysis
+    // Use absolute paths to avoid path resolution issues
+    const audioPath = path.resolve(path.join(jobDir, 'audio.wav'));
+    const landmarksPath = path.resolve(path.join(jobDir, 'landmarks.json'));
+    const absoluteFacesDir = path.resolve(facesDir);
+    
+    // Get video FPS (default to 1.0 for extracted frames)
+    const videoFps = 1.0; // Since we extract at 1 fps
+    
+    // Send faces_folder path, audio_path, and landmarks_path to Flask server
+    // Use absolute paths to ensure Flask can find the files
+    const requestPayload: any = {
       jobId,
-      faces_folder: facesDir,
+      faces_folder: absoluteFacesDir,  // Use absolute path
       batch_size: batchSize,
-    }, {
+    };
+    
+    // Add audio and landmarks if available - with extensive debugging
+    logger.info(`Checking for audio and landmarks files...`);
+    logger.info(`  Audio path: ${audioPath}`);
+    logger.info(`  Landmarks path: ${landmarksPath}`);
+    logger.info(`  Audio exists: ${fs.existsSync(audioPath)}`);
+    logger.info(`  Landmarks exists: ${fs.existsSync(landmarksPath)}`);
+    
+    // Check audio file - use absolute paths
+    const absoluteAudioPath = path.resolve(audioPath);
+    if (fs.existsSync(absoluteAudioPath)) {
+      const audioStats = fs.statSync(absoluteAudioPath);
+      requestPayload.audio_path = absoluteAudioPath;  // Use absolute path
+      logger.info(`[OK] Audio file found: ${absoluteAudioPath} (${(audioStats.size / 1024).toFixed(2)} KB)`);
+    } else {
+      logger.warn(`[ERROR] Audio file NOT found at ${absoluteAudioPath}`);
+      logger.warn(`  This will disable audio sync analysis`);
+      // Try alternative locations
+      const altAudioPath = path.resolve(path.join(path.dirname(jobDir), jobId, 'audio.wav'));
+      if (fs.existsSync(altAudioPath)) {
+        requestPayload.audio_path = altAudioPath;
+        logger.info(`[OK] Found audio at alternative location: ${altAudioPath}`);
+      }
+    }
+    
+    // Check landmarks file - use absolute paths
+    const absoluteLandmarksPath = path.resolve(landmarksPath);
+    if (fs.existsSync(absoluteLandmarksPath)) {
+      const landmarksStats = fs.statSync(absoluteLandmarksPath);
+      requestPayload.landmarks_path = absoluteLandmarksPath;  // Use absolute path
+      requestPayload.video_fps = videoFps;
+      logger.info(`[OK] Landmarks file found: ${absoluteLandmarksPath} (${(landmarksStats.size / 1024).toFixed(2)} KB)`);
+    } else {
+      logger.warn(`[ERROR] Landmarks file NOT found at ${absoluteLandmarksPath}`);
+      logger.warn(`  This will disable audio sync analysis`);
+      
+      // Try alternative locations where preprocessor might have saved it
+      const altPaths = [
+        path.resolve(path.join(path.dirname(jobDir), jobId, 'landmarks.json')),
+        path.resolve(path.join(jobDir, '..', jobId, 'landmarks.json')),
+        path.resolve(path.join(path.dirname(path.dirname(jobDir)), jobId, 'landmarks.json')),
+      ];
+      
+      for (const altPath of altPaths) {
+        if (fs.existsSync(altPath)) {
+          requestPayload.landmarks_path = altPath;
+          requestPayload.video_fps = videoFps;
+          logger.info(`[OK] Found landmarks at alternative location: ${altPath}`);
+          break;
+        }
+      }
+      
+      // If still not found, list directory contents for debugging
+      if (!requestPayload.landmarks_path) {
+        logger.warn(`  Searching in job directory: ${jobDir}`);
+        try {
+          const dirContents = fs.readdirSync(jobDir);
+          logger.warn(`  Directory contents: ${dirContents.join(', ')}`);
+        } catch (e) {
+          logger.warn(`  Could not read directory: ${e}`);
+        }
+      }
+    }
+    
+    // Final check - both must be present for audio sync
+    if (requestPayload.audio_path && requestPayload.landmarks_path) {
+      logger.info(`[OK] Both audio and landmarks available - audio sync will be computed`);
+    } else {
+      logger.warn(`[ERROR] Audio sync will be skipped - missing:`);
+      if (!requestPayload.audio_path) logger.warn(`  - Audio file`);
+      if (!requestPayload.landmarks_path) logger.warn(`  - Landmarks file`);
+    }
+    
+    const response = await axios.post(`${MODEL_SERVER_URL}/infer_frames`, requestPayload, {
       headers: {
         'Content-Type': 'application/json',
       },
@@ -231,7 +637,7 @@ export async function processAnalysisJob(job: Job): Promise<void> {
     const audioPath = path.join(jobDir, 'audio.wav');
     try {
       await extractAudio(videoPath, audioPath);
-      logger.info('Audio extracted successfully');
+      logger.info('[OK] Audio extracted successfully');
     } catch (err) {
       logger.warn(`Audio extraction warning (proceeding without audio): ${err}`);
     }
@@ -266,37 +672,54 @@ export async function processAnalysisJob(job: Job): Promise<void> {
       };
     });
 
-    // Extract final score
-    const finalScore = modelResult.visual_prob || modelResult.score || null;
+    // Extract final scores (server now computes final_prob using aggregation)
+    const visualScore = modelResult.visual_prob ?? modelResult.score ?? null;
+    const audioSyncScore = modelResult.audio_sync_score ?? null;  // Use ?? to handle 0 values
+    const finalScore = modelResult.final_prob ?? modelResult.combined_score ?? visualScore;
+    const classification = modelResult.classification || 'UNKNOWN';
+    const confidenceLevel = modelResult.confidence_level || 'UNKNOWN';
+    const explanations = modelResult.explanations || [];
+    const audioSyncQuality = modelResult.audio_sync_quality || null;
     
-    // Determine classification based on thresholds
-    // Model output: visual_prob = probability of being fake/deepfake (0=authentic, 1=deepfake)
-    let classification = 'UNKNOWN';
-    let confidenceLevel = 'UNKNOWN';
-    if (finalScore !== null) {
-      if (finalScore >= 0.66) {
-        classification = 'DEEPFAKE';
-        confidenceLevel = 'HIGH';
-      } else if (finalScore >= 0.33) {
-        classification = 'SUSPECTED';
-        confidenceLevel = 'MEDIUM';
-      } else {
-        classification = 'AUTHENTIC';
-        confidenceLevel = 'LOW';
-      }
+    // Log audio sync score for debugging
+    logger.info(`Extracted from model result:`);
+    logger.info(`  audio_sync_score: ${audioSyncScore !== null ? audioSyncScore : 'null'}`);
+    logger.info(`  audio_sync_quality: ${audioSyncQuality || 'null'}`);
+    logger.info(`  Has audio_sync_score in response: ${'audio_sync_score' in modelResult}`);
+    
+    // Log the aggregation results
+    logger.info(`Aggregation results:`);
+    logger.info(`  visual_prob = ${visualScore !== null ? visualScore.toFixed(4) : 'null'}`);
+    if (audioSyncScore !== null) {
+      logger.info(`  audio_sync_score = ${audioSyncScore.toFixed(4)}`);
+    }
+    logger.info(`  final_prob = ${finalScore !== null ? finalScore.toFixed(4) : 'null'} (alpha=0.8, beta=0.2)`);
+    logger.info(`  classification = ${classification} (${confidenceLevel})`);
+    if (explanations.length > 0) {
+      logger.info(`  explanations: ${explanations.length} items`);
     }
     
     // Log final score with threshold interpretation
     logger.info(`\n${'='.repeat(60)}`);
     logger.info(`FINAL SCORE (Node.js Backend):`);
-    logger.info(`  visual_prob = ${finalScore !== null ? finalScore.toFixed(4) : 'null'} (${finalScore !== null ? (finalScore * 100).toFixed(2) : 'null'}%)`);
+    logger.info(`  visual_prob = ${visualScore !== null ? visualScore.toFixed(4) : 'null'} (${visualScore !== null ? (visualScore * 100).toFixed(2) : 'null'}%)`);
+    if (audioSyncScore !== null) {
+      logger.info(`  audio_sync_score = ${audioSyncScore.toFixed(4)} (${(audioSyncScore * 100).toFixed(2)}%)`);
+    }
+    logger.info(`  final_prob = ${finalScore !== null ? finalScore.toFixed(4) : 'null'} (${finalScore !== null ? (finalScore * 100).toFixed(2) : 'null'}%)`);
     logger.info(`  Classification: ${classification} (Confidence: ${confidenceLevel})`);
-    logger.info(`  Thresholds: >=0.66=Deepfake, >=0.33=Suspected, <0.33=Authentic`);
+    logger.info(`  Thresholds (fake_ratio): <0.3=REAL, 0.3-0.59=SUSPECTED, >=0.6=FAKE`);
     logger.info(`  Job ID: ${jobId}`);
     logger.info(`  Number of frames: ${modelResult.meta?.num_frames || 'unknown'}`);
     logger.info(`  Suspicious frames: ${suspicious.length}`);
     if (suspicious.length > 0) {
       logger.info(`  Top suspicious frame scores: ${suspicious.slice(0, 3).map((s: any) => (s.score ?? s.prob ?? s.confidence ?? 0).toFixed(4)).join(', ')}`);
+    }
+    if (explanations.length > 0) {
+      logger.info(`  Explanations:`);
+      explanations.slice(0, 3).forEach((exp: string) => {
+        logger.info(`    - ${exp}`);
+      });
     }
     logger.info(`${'='.repeat(60)}\n`);
 
@@ -307,10 +730,19 @@ export async function processAnalysisJob(job: Job): Promise<void> {
         status: 'done',
         progress: 100,
         result: {
-          visual_prob: finalScore,
+          visual_prob: visualScore,
+          audio_sync_score: audioSyncScore,
+          final_prob: finalScore,
+          classification: classification,
+          confidence_level: confidenceLevel,
+          explanations: explanations,
           visual_scores: modelResult.visual_scores || null,
           suspiciousFrames: uploadedFrames,
-          meta: modelResult.meta || {},
+          meta: {
+            ...(modelResult.meta || {}),
+            has_audio_sync: audioSyncScore !== null,
+            aggregation_formula: 'final_prob = 0.8 * visual_prob + 0.2 * (1 - audio_sync_score)',
+          },
         },
       }
     );
