@@ -23,7 +23,10 @@ const generateAnalysisSummary = (result: any): string => {
   // Use final_prob if available (aggregated score), otherwise fall back to visual_prob
   const finalProb = result.final_prob ?? result.visual_prob ?? result.score ?? 0;
   const visualProb = result.visual_prob ?? result.score ?? 0;
-  const audioSyncScore = result.audio_sync_score ?? null;
+  // Handle audio sync score - check for null/undefined, but allow 0 as valid value
+  const audioSyncScore = (result.audio_sync_score !== null && result.audio_sync_score !== undefined) 
+    ? result.audio_sync_score 
+    : null;
   const scorePercent = Math.round(finalProb * 100);
   const numFrames = result.meta?.num_frames ?? result.visual_scores?.length ?? 0;
   const suspiciousFrames = result.suspiciousFrames || [];
@@ -61,9 +64,10 @@ const generateAnalysisSummary = (result: any): string => {
   summary += `>   Note: This is the probability the video is AI-generated, NOT model accuracy\n`;
   summary += `> Visual probability: ${Math.round(visualProb * 100)}% (${visualProb.toFixed(4)})\n`;
   
-  if (audioSyncScore !== null) {
+  if (audioSyncScore !== null && audioSyncScore !== undefined) {
     const audioSyncPercent = Math.round(audioSyncScore * 100);
     summary += `> Audio sync score: ${audioSyncPercent}% (${audioSyncScore.toFixed(4)})\n`;
+    summary += `>   Note: This is the probability that audio and video are synchronized (higher = better sync, more authentic)\n`;
     summary += `>   ${audioSyncScore >= 0.6 ? 'Good' : audioSyncScore >= 0.3 ? 'Moderate' : 'Poor'} lip-sync quality\n`;
   } else {
     summary += `> Audio sync score: Not available\n`;
@@ -223,6 +227,10 @@ const Results = () => {
         console.log('Raw API response:', data);
         const resultData = data.result || null;
         console.log('Result data:', resultData);
+        console.log('Audio sync score in result:', resultData?.audio_sync_score);
+        console.log('Audio sync score type:', typeof resultData?.audio_sync_score);
+        console.log('Audio sync score !== null:', resultData?.audio_sync_score !== null);
+        console.log('Audio sync score !== undefined:', resultData?.audio_sync_score !== undefined);
         setResult(resultData);
         
         // Log final score for debugging - handle both visual_prob and legacy score field

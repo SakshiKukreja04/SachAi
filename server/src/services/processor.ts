@@ -192,10 +192,6 @@ async function ensureVideoFile(jobId: string, filePath?: string, videoUrl?: stri
         const wrapperScript = path.join(__dirname, '../../scripts/download_video.py');
         const absoluteWrapperScript = path.resolve(wrapperScript);
         
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/0d4845cb-1250-48f7-9afb-15804a297482',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'processor.ts:189',message:'Before spawn - using python from PATH with wrapper',data:{pythonCommand:pyCmd,pythonPath,wrapperScript:absoluteWrapperScript,wrapperExists:fs.existsSync(absoluteWrapperScript),pathExists:fs.existsSync(pythonPath),platform:process.platform},timestamp:Date.now(),sessionId:'debug-session',runId:'run8',hypothesisId:'R'})}).catch(()=>{});
-        // #endregion
-        
         if (!fs.existsSync(absoluteWrapperScript)) {
           reject(new Error(`Python wrapper script not found: ${absoluteWrapperScript}`));
           return;
@@ -227,15 +223,7 @@ async function ensureVideoFile(jobId: string, filePath?: string, videoUrl?: stri
           }
         };
         
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/0d4845cb-1250-48f7-9afb-15804a297482',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'processor.ts:210',message:'About to spawn python from PATH with wrapper',data:{hasShell:false,platform:process.platform,argsCount:args.length,pythonCommand:pyCmd},timestamp:Date.now(),sessionId:'debug-session',runId:'run8',hypothesisId:'R'})}).catch(()=>{});
-        // #endregion
-        
         const pythonProcess = spawn(pyCmd, args, spawnOptions);
-        
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/0d4845cb-1250-48f7-9afb-15804a297482',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'processor.ts:217',message:'After spawn call',data:{spawned:!!pythonProcess,pid:pythonProcess?.pid},timestamp:Date.now(),sessionId:'debug-session',runId:'run8',hypothesisId:'R'})}).catch(()=>{});
-        // #endregion
         
         let stdout = '';
         let stderr = '';
@@ -261,10 +249,6 @@ async function ensureVideoFile(jobId: string, filePath?: string, videoUrl?: stri
         }
         
         pythonProcess.on('close', (code) => {
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/0d4845cb-1250-48f7-9afb-15804a297482',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'processor.ts:231',message:'Python wrapper close event',data:{code,fileExists:fs.existsSync(videoPath),stdoutLength:stdout.length,stderrLength:stderr.length,stdout:stdout.substring(0,200),stderr:stderr.substring(0,200)},timestamp:Date.now(),sessionId:'debug-session',runId:'run8',hypothesisId:'R'})}).catch(()=>{});
-          // #endregion
-          
           if (code === 0) {
             // Success - verify file exists
             if (fs.existsSync(videoPath)) {
@@ -298,10 +282,6 @@ async function ensureVideoFile(jobId: string, filePath?: string, videoUrl?: stri
         });
         
         pythonProcess.on('error', (err) => {
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/0d4845cb-1250-48f7-9afb-15804a297482',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'processor.ts:264',message:'Python wrapper spawn error',data:{errorMessage:err.message,errorCode:(err as any).code,errorName:err.name,pythonCommand:pyCmd,platform:process.platform},timestamp:Date.now(),sessionId:'debug-session',runId:'run8',hypothesisId:'R'})}).catch(()=>{});
-          // #endregion
-          
           logger.error(`Python wrapper spawn error: ${err.message}`);
           logger.error(`Python command used: ${pyCmd}`);
           if (err.message.includes('ENOENT') || err.message.includes('not found')) {
@@ -474,9 +454,6 @@ async function callModelServer(jobId: string, images: any[], batchSize = 32): Pr
     
     logger.info(`Calling model server at ${MODEL_SERVER_URL}/infer_frames with faces_folder: ${facesDir}...`);
     
-    // #region agent log
-    try { const fs = require('fs'); fs.appendFileSync('c:/SachAi/.cursor/debug.log', JSON.stringify({ location: 'processor.ts:155', message: 'Before model server call', data: { jobId, facesDir, imageCount: images.length, modelServerUrl: MODEL_SERVER_URL, imageFilenames: images.slice(0, 3).map((img: any) => img.filename) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) + '\n'); } catch {}
-    // #endregion
     
     // Get audio path and landmarks path for sync analysis
     // Use absolute paths to avoid path resolution issues
@@ -573,36 +550,6 @@ async function callModelServer(jobId: string, images: any[], batchSize = 32): Pr
       },
     });
     
-    // #region agent log
-    try { 
-      const fs = require('fs');
-      const visualScores = response.data?.visual_scores || [];
-      const topScores = visualScores.slice(0, 5).map((s: any) => s.score);
-      fs.appendFileSync('c:/SachAi/.cursor/debug.log', JSON.stringify({ 
-        location: 'processor.ts:170', 
-        message: 'Model server response received', 
-        data: { 
-          jobId, 
-          visualProb: response.data?.visual_prob, 
-          score: response.data?.score, 
-          label: response.data?.label, 
-          suspiciousFramesCount: (response.data?.suspicious_frames || response.data?.suspiciousFrames || []).length, 
-          modelType: response.data?.meta?.model || 'unknown', 
-          hasVisualScores: !!response.data?.visual_scores,
-          numFrames: response.data?.meta?.num_frames,
-          topFrameScores: topScores,
-          minFrameScore: visualScores.length > 0 ? Math.min(...visualScores.map((s: any) => s.score)) : null,
-          maxFrameScore: visualScores.length > 0 ? Math.max(...visualScores.map((s: any) => s.score)) : null,
-          meanFrameScore: visualScores.length > 0 ? visualScores.reduce((sum: number, s: any) => sum + s.score, 0) / visualScores.length : null,
-          responseKeys: Object.keys(response.data || {}) 
-        }, 
-        timestamp: Date.now(), 
-        sessionId: 'debug-session', 
-        runId: 'run1', 
-        hypothesisId: 'A' 
-      }) + '\n'); 
-    } catch {}
-    // #endregion
     
     logger.info('Model server response received');
     return response.data;

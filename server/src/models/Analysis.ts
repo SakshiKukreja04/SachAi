@@ -50,6 +50,11 @@ const analysisSchema = new Schema<IAnalysis>(
       reason: String,
       // New fields - use Schema.Types.Mixed for flexibility
       visual_prob: Number,
+      audio_sync_score: Number,
+      final_prob: Number,
+      classification: String,
+      confidence_level: String,
+      explanations: Schema.Types.Mixed,
       visual_scores: Schema.Types.Mixed,
       suspiciousFrames: Schema.Types.Mixed,
       meta: Schema.Types.Mixed,
