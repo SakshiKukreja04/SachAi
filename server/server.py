@@ -280,7 +280,7 @@ def infer_frames():
         visual_prob = float(aggregate_scores(frame_scores, method="fake_ratio"))
         
         # Calculate fake_ratio statistics for logging
-        fake_threshold = 0.5
+        fake_threshold = 0.4
         total_frames = len(frame_scores)
         fake_frames = sum(1 for score in frame_scores if score >= fake_threshold)
         fake_ratio = fake_frames / total_frames if total_frames > 0 else 0.0
@@ -397,15 +397,27 @@ def infer_frames():
         print(f"{'='*60}\n")
         
         # Combine visual and audio scores using weighted aggregation
+        # Determine mismatch count from detailed sync analysis (if available)
+        mismatch_count = 0
+        if sync_analysis and isinstance(sync_analysis, dict):
+            mismatch_count = len(sync_analysis.get("mismatch_regions", []))
+
         final_prob = combine_visual_audio_scores(
             visual_prob=visual_prob,
             audio_sync_score=audio_sync_score,
             alpha=0.8,
-            beta=0.2
+            beta=0.1,
+            mismatch_count=mismatch_count
         )
         
-        # Classify final score using fake_ratio thresholds
-        classification, confidence_level = classify_final_score(final_prob, use_fake_ratio=True)
+        # Classify based on visual_prob: if visual_prob >= 0.6, it's DEEPFAKE
+        # Otherwise, use final_prob for classification
+        if visual_prob >= 0.6:
+            classification = "DEEPFAKE"
+            confidence_level = "HIGH"
+        else:
+            # Use final_prob for classification when visual_prob < 0.6
+            classification, confidence_level = classify_final_score(final_prob, use_fake_ratio=True)
         
         # Generate explanations
         visual_explanations = generate_visual_explanations(suspicious, video_fps=video_fps)
@@ -441,7 +453,7 @@ def infer_frames():
                 "warning": "Model is untrained - results are unreliable" if CHECKPOINT_PATH is None else None,
                 "aggregation": {
                     "alpha": 0.8,
-                    "beta": 0.2,
+                    "beta": 0.1,
                     "formula": "final_prob = alpha * visual_prob + beta * (1 - audio_sync_score)"
                 },
                 "sync_analysis": sync_analysis
@@ -456,7 +468,7 @@ def infer_frames():
             print(f"  audio_sync_score = {audio_sync_score:.4f} ({audio_sync_score*100:.2f}%)")
         print(f"  final_prob = {final_prob:.4f} ({final_prob*100:.2f}%)")
         print(f"  Classification: {classification} (Confidence: {confidence_level})")
-        print(f"  Thresholds (fake_ratio): <0.3=REAL, 0.3-0.59=SUSPECTED, >=0.6=FAKE")
+        print(f"  Thresholds: visual_prob >= 0.6 → DEEPFAKE, else use final_prob (<0.3=REAL, 0.3-0.59=SUSPECTED, >=0.6=FAKE)")
         print(f"  Job ID: {job_id}")
         print(f"  Number of frames: {len(frame_scores)}")
         print(f"  Suspicious frames found: {len(suspicious)}")

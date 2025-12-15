@@ -23,7 +23,7 @@ def aggregate_scores(frame_scores: List[float], method: str = "fake_ratio") -> f
     if method == "fake_ratio":
         # New approach: Calculate fake_ratio = fake_frames / total_frames
         # A frame is considered "fake" if score >= 0.5
-        fake_threshold = 0.5
+        fake_threshold = 0.4
         total_frames = len(arr)
         fake_frames = np.sum(arr >= fake_threshold)
         fake_ratio = float(fake_frames / total_frames) if total_frames > 0 else 0.0
@@ -76,7 +76,8 @@ def combine_visual_audio_scores(
     visual_prob: float,
     audio_sync_score: Optional[float] = None,
     alpha: float = 0.8,
-    beta: float = 0.2
+    beta: float = 0.1,
+    mismatch_count: int = 0
 ) -> float:
     """
     Combine visual and audio scores using weighted formula.
@@ -92,8 +93,9 @@ def combine_visual_audio_scores(
         visual_prob: Visual fake probability [0, 1]
         audio_sync_score: Audio sync score [0, 1] or None
         alpha: Weight for visual score (default 0.8)
-        beta: Weight for audio mismatch (default 0.2)
-    
+        beta: Weight for audio mismatch (default 0.1)
+        mismatch_count: Number of detected audio mismatch regions (default 0)
+
     Returns:
         Combined fake probability [0, 1]
     """
@@ -105,6 +107,18 @@ def combine_visual_audio_scores(
     
     # Weighted combination
     final_prob = alpha * visual_prob + beta * audio_mismatch
+
+    # Heuristic override: if many mismatch regions detected, boost the
+    # final probability to reflect strong audio evidence of manipulation.
+    # This ensures videos with >3 distinct mismatch regions are treated
+    # as highly suspicious regardless of a low visual_prob.
+    try:
+        if isinstance(mismatch_count, int) and mismatch_count > 3:
+            # Boost to high suspicion floor (85%) or keep higher existing value
+            final_prob = max(final_prob, 0.85)
+    except Exception:
+        # In case of unexpected types, ignore and keep original final_prob
+        pass
     
     # Clamp to [0, 1]
     return max(0.0, min(1.0, final_prob))

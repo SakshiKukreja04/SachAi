@@ -34,13 +34,17 @@ const generateAnalysisSummary = (result: any): string => {
   const explanations = result.explanations || [];
 
   // Use classification from server if available, otherwise compute
+  // IMPORTANT: If visual_prob >= 0.6, it's always DEEPFAKE
   let classification: string = result.classification || 'UNKNOWN';
   let confidenceLevel: string = result.confidence_level || 'UNKNOWN';
   
   if (classification === 'UNKNOWN') {
-    // Fallback classification logic (matching server fake_ratio thresholds)
-    // fake_ratio approach: <0.3=REAL, 0.3-0.59=SUSPECTED, >=0.6=FAKE
-    if (finalProb < 0.3) {
+    // Fallback classification logic: visual_prob >= 0.6 → DEEPFAKE
+    // Otherwise use final_prob with thresholds: <0.3=REAL, 0.3-0.59=SUSPECTED, >=0.6=FAKE
+    if (visualProb >= 0.6) {
+      classification = 'DEEPFAKE';
+      confidenceLevel = 'HIGH';
+    } else if (finalProb < 0.3) {
       classification = 'AUTHENTIC';
       confidenceLevel = 'HIGH';
     } else if (finalProb < 0.6) {
@@ -51,6 +55,11 @@ const generateAnalysisSummary = (result: any): string => {
       confidenceLevel = 'HIGH';
     }
   }
+  
+  // Convert classification to UI label format (lowercase)
+  const classificationLabel = classification === 'DEEPFAKE' ? 'deepfake' 
+    : classification === 'SUSPECTED' ? 'suspected' 
+    : 'authentic';
 
   // Calculate statistics
   const frameScores = visualScores.map((s: any) => s.score ?? 0).filter((s: number) => s > 0);
@@ -268,6 +277,35 @@ const Results = () => {
     fetchStatus();
   }, [id, location.state]);
 
+  // Compute classification for UI display (use the same logic as generateAnalysisSummary)
+  const finalProb = result ? (result.final_prob ?? result.visual_prob ?? result.score ?? 0) : 0;
+  const visualProb = result ? (result.visual_prob ?? result.score ?? 0) : 0;
+  let classification: string = result?.classification || 'UNKNOWN';
+  let confidenceLevel: string = result?.confidence_level || 'UNKNOWN';
+  
+  if (classification === 'UNKNOWN') {
+    // Fallback classification logic: visual_prob >= 0.6 → DEEPFAKE
+    // Otherwise use final_prob with thresholds: <0.3=REAL, 0.3-0.59=SUSPECTED, >=0.6=FAKE
+    if (visualProb >= 0.6) {
+      classification = 'DEEPFAKE';
+      confidenceLevel = 'HIGH';
+    } else if (finalProb < 0.3) {
+      classification = 'AUTHENTIC';
+      confidenceLevel = 'HIGH';
+    } else if (finalProb < 0.6) {
+      classification = 'SUSPECTED';
+      confidenceLevel = 'MEDIUM';
+    } else {
+      classification = 'DEEPFAKE';
+      confidenceLevel = 'HIGH';
+    }
+  }
+  
+  // Convert classification to UI label format (lowercase)
+  const classificationLabel = classification === 'DEEPFAKE' ? 'deepfake' 
+    : classification === 'SUSPECTED' ? 'suspected' 
+    : 'authentic';
+
   return (
     <div className="min-h-screen bg-hero-gradient relative overflow-hidden">
       <ParticleBackground />
@@ -287,10 +325,10 @@ const Results = () => {
               {/* Score Card */}
               <GlassCard className="flex flex-col items-center justify-center py-8 animate-fade-in-up">
                 <ConfidenceGauge
-                  score={result ? Math.round(((result.visual_prob ?? result.score ?? 0) * 100)) : demoResult.score}
+                  score={result ? Math.round(((result.final_prob ?? result.visual_prob ?? result.score ?? 0) * 100)) : demoResult.score}
                   label={
                     result
-                      ? ((result.final_prob ?? result.visual_prob ?? result.score ?? 0) >= 0.6 ? 'deepfake' : (result.final_prob ?? result.visual_prob ?? result.score ?? 0) >= 0.3 ? 'suspected' : 'authentic')
+                      ? classificationLabel
                       : demoResult.label
                   }
                 />
@@ -298,7 +336,7 @@ const Results = () => {
                   <StatusBadge
                     status={
                       result
-                        ? ((result.final_prob ?? result.visual_prob ?? result.score ?? 0) >= 0.6 ? 'deepfake' : (result.final_prob ?? result.visual_prob ?? result.score ?? 0) >= 0.3 ? 'suspected' : 'authentic')
+                        ? classificationLabel
                         : demoResult.label
                     }
                   />
