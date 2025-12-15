@@ -29,17 +29,11 @@ router.get('/status/:jobId', async (req: Request, res: Response) => {
     if (analysis.result) {
       logger.info(`Result structure:`);
       logger.info(`  - visual_prob: ${analysis.result.visual_prob ?? 'undefined'}`);
-      logger.info(`  - audio_sync_score: ${(analysis.result as any).audio_sync_score ?? 'undefined'}`);
-      logger.info(`  - final_prob: ${(analysis.result as any).final_prob ?? 'undefined'}`);
       logger.info(`  - score (legacy): ${analysis.result.score ?? 'undefined'}`);
       logger.info(`  - suspiciousFrames count: ${analysis.result.suspiciousFrames?.length ?? 0}`);
       if (analysis.result.visual_prob !== undefined) {
         const score = analysis.result.visual_prob;
         logger.info(`  - visual_prob value: ${score.toFixed(4)} (${(score * 100).toFixed(2)}%)`);
-      }
-      if ((analysis.result as any).audio_sync_score !== undefined && (analysis.result as any).audio_sync_score !== null) {
-        const audioScore = (analysis.result as any).audio_sync_score;
-        logger.info(`  - audio_sync_score value: ${audioScore.toFixed(4)} (${(audioScore * 100).toFixed(2)}%)`);
       }
       logger.info(`Full result object keys: ${Object.keys(analysis.result).join(', ')}`);
     } else {

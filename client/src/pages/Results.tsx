@@ -224,13 +224,7 @@ const Results = () => {
           return;
         }
         const data = await resp.json();
-        console.log('Raw API response:', data);
         const resultData = data.result || null;
-        console.log('Result data:', resultData);
-        console.log('Audio sync score in result:', resultData?.audio_sync_score);
-        console.log('Audio sync score type:', typeof resultData?.audio_sync_score);
-        console.log('Audio sync score !== null:', resultData?.audio_sync_score !== null);
-        console.log('Audio sync score !== undefined:', resultData?.audio_sync_score !== undefined);
         setResult(resultData);
         
         // Log final score for debugging - handle both visual_prob and legacy score field
